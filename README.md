@@ -21,4 +21,18 @@
 
 ---
 
-已使用deepseek反编译源代码
+最初使用 DeepSeek 反编译，当前源码已替换为按原始 EXE 指令流还原的版本。
+
+## 构建与比对
+
+`ConsoleApplication1.c` 使用 **GBK/cp936** 编码，编辑时请保留编码。
+需要 MSVC v142 x86 工具集、Windows SDK 和 Python（比对依赖 `capstone`）。
+`build.bat` 中的 `vcvarsall.bat` 路径对应当前机器，其他安装位置需调整该路径。
+
+```bat
+build.bat
+uv run --with capstone python tools\verify_rebuild.py --orig ConsoleApplication1.exe --rebuilt Debug\ConsoleApplication1.exe --map Debug\ConsoleApplication1.map
+```
+
+构建产物位于 `Debug/`，不会覆盖根目录的原始 `ConsoleApplication1.exe`。
+还原进度及验证边界见 [Reverse.md](Reverse.md)；验证器的 `PASS` 不代表控制流或整文件字节完全一致。

@@ -6,8 +6,9 @@
 
 - 原始文件：`ConsoleApplication1.exe`（47104 字节）
   - SHA-256 `ca890eacb4ecc4e431f0c690215b29481221c0a8b4d3c52d6a752967e51391e5`
-- 重建工程目录：`D:\VS2019\HELLO\ConsoleApplication1`（路径与 PDB 内嵌路径一致）
-- 重建源码：`D:\VS2019\HELLO\ConsoleApplication1\ConsoleApplication1.c`（**GBK/cp936 存盘**）
+- 重建工程目录：本仓库根目录（已从 `D:\VS2019\HELLO\ConsoleApplication1` 迁回；旧路径与原版 PDB 内嵌路径一致）
+- 重建源码：`ConsoleApplication1.c`（**GBK/cp936 存盘**，原始字节复制）
+- 构建入口：`build.bat`，产物写入 `Debug/`；新构建路径与原版不同，可能影响调试信息及布局
 - 验证脚本：`tools/verify_rebuild.py`
 
 ---
@@ -200,17 +201,31 @@ RESULT: PASS (layout reordering accepted: handle_input)
 ## 6. 复现与验证
 
 ```bat
-rem 1) 用 v142 (14.29) 工具集编译（脚本见工程目录 build.bat）
-D:\VS2019\HELLO\ConsoleApplication1\build.bat
+rem 1) 在仓库根目录用 v142 (14.29) 工具集编译
+build.bat
 
 rem 2) 归一化指令流比对
-python tools\verify_rebuild.py ^
+uv run --with capstone python tools\verify_rebuild.py ^
   --orig ConsoleApplication1.exe ^
-  --rebuilt D:\VS2019\HELLO\ConsoleApplication1\Debug\ConsoleApplication1.exe ^
-  --map D:\VS2019\HELLO\ConsoleApplication1\Debug\ConsoleApplication1.map
+  --rebuilt Debug\ConsoleApplication1.exe ^
+  --map Debug\ConsoleApplication1.map
 ```
 
 所需 Python 包：`capstone`。
+
+迁回说明（2026-10-30）：源码与构建入口现已在仓库内。上文 §4 的数字为旧路径产物的历史结果。
+现有验证器把镜像内地址统一为 `IMG`，`LAYOUT_ONLY` 判定会删除跳转并忽略指令顺序，
+因此 `MATCH` / `LAYOUT-ONLY` 不足以证明引用目标正确或控制流等价；此次迁回未改动验证器逻辑。
+
+迁回后实测：源码与外部版本 SHA-256 均为
+`851d6c0a7eb1eaa30f52e7abd269f2848b0d02624659b0149c865b2c9ccf6aa9`。
+根目录 `build.bat` 输出 `BUILD_OK`（保留原版 `strcpy`，有三条 C4996 警告）；
+上述比对命令输出 8 个 `MATCH`、`handle_input` 为 `146/147 LAYOUT-ONLY`，
+`.data` / `.rsrc` raw 均相同，最终 `PASS`。迁回后 `.rdata` rawdiff 为 3192，
+其余表中计数与旧路径运行结果相同；此处只记录现有验证器的输出，不提升为等价性证明。
+实际运行 `Debug/ConsoleApplication1.exe`：初始坐标 `(5,8)`，未归位箱子为 2；
+输入 `w` 后坐标为 `(4,8)`，再输入 `s,d,d` 后坐标为 `(5,10)`，
+右侧箱子向右移动一格，尚未到目标点，未归位箱子仍为 2；中文与地图显示正常。
 
 ---
 
@@ -219,4 +234,4 @@ python tools\verify_rebuild.py ^
 1. 取得 **MSVC 14.29.30133**（VS2019 16.11.0）工具集，消除函数排序、Rich header 与少量代码生成差异；
 2. 目标：`.text` / `.rdata` 全节字节一致；
 3. 回填链接期字段（PE 时间戳、RSDS GUID/age），完成整文件 SHA-256 对齐；
-4. 将重建源码迁回本仓库（替换当前 deepseek 反编译版本）。
+4. 已完成：重建源码迁回本仓库，替换 DeepSeek 反编译版本，并加入根目录 `build.bat`。
