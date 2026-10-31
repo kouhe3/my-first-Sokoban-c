@@ -2,3 +2,4 @@
 * text=auto eol=lf
 ConsoleApplication1.c -text
 build.bat -text
+ConsoleApplication1.exe -text

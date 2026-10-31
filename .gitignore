@@ -29,7 +29,9 @@
 *.dylib
 
 # Executables
+# keep the original release binary (verification ground truth)
 *.exe
+/ConsoleApplication1.exe
 *.out
 *.app
 *.i*86
