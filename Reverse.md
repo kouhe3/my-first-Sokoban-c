@@ -88,7 +88,16 @@
 - CodeView (type 2, 90 字节)：`RSDS`，GUID `cbb2294a-2896-4edc-9b01-ea596b77aa64`，age **114**，
   PDB 路径 `D:\VS2019\HELLO\ConsoleApplication1\Debug\ConsoleApplication1.pdb`。
 - type 12 `VC_FEATURE`，20 字节。
-- Rich header 解出的工具集 build 为 **30133**，部分库为 30034 → VS2019 16.11 v142。
+- Rich header 每条记录是 `(product, build)` 与计数。微构建实验（cl + link、不链 CRT）确认
+  `0x0104` = cl、`0x0102` = link，计数 = 该 build 的 obj 数：
+
+  | 文件 | cl 条目 | link 条目 |
+  | --- | --- | --- |
+  | 原版 | `30034 ×13` | `30133 ×1` |
+  | 重建（单 TU） | `30034 ×13`（预编译 CRT 库）+ `30159 ×1`（用户 obj） | `30159 ×1` |
+
+  原版**没有任何 30133/30159 的 cl 条目**，说明用户代码由 **cl 19.29.30034**（VS2019 16.10 时代）编译；
+  30133 只出现在链接器条目。同一 build 的计数会把用户 obj 与静态库 obj 合并，不能直接当作源文件数。
 
 ---
 
@@ -132,6 +141,19 @@ link /nologo /DEBUG /INCREMENTAL /MANIFEST:EMBED /subsystem:console ^
    - `switch` 的 case 顺序为 **w, a, s, d**；
    - `beyond_y = new_y + new_y - *player_y;`（`x + x` 形式；写 `2 * x` 会被 30159 编成 `shl`）；
    - `if (map[new_y][new_x] != '#') { ... }` 正条件嵌套（`if (== '#') return;` 会生成 `jne` + 额外 `jmp`）。
+5. 工程形态与函数排布（2026-10-31 新增，尚未定论）：
+   - 本机 `VC\Tools\MSVC\14.29.30133\` 目录内实际是 **30159** 二进制；从 2021-09-03 的频道清单
+     （`VisualStudio.16.Release.chman` → `VisualStudio.vsman`）下载的**真 30133** 编译器，
+     重建结果与 30159 完全相同 → 补丁版本不是函数排序的原因。
+   - cl 30040 / 30133 / 30159 都把每个函数写成**按函数名升序**的独立 `.text$mn` COMDAT
+     （zebra/yak/main 的 obj 段序为 main, yak, zebra）；`/ORDER` 在 `/INCREMENTAL` 下被忽略（LNK4075），
+     增量链接也不会保留 `.ilk` 中的旧顺序；而多 obj 链接按命令行顺序排布。
+   - 因此原版 `.text` 的「源码序」只能来自两种工程形态：单文件 + 编译器不排序（cl 30034），
+     或一函数一文件。现有证据偏向**单文件**：原版 `.rdata` `0x2491`、`.msvcjmc` `0x11f`
+     小于一函数一文件的实测值（`0x25d1` / `0x161`），更接近单文件值（`0x2581` / `0x10a`）。
+   - 用 `tools/split_multi_tu.py` 生成一函数一文件后，cl 30133 构建可复现原版函数顺序，
+     首函数 `0x411810` vs 原版 `0x4117F0`，各函数地址差 `0x10–0x30`，但 `.rdata`/`.msvcjmc` 变大。
+   - 结论：逐字节对齐需要 **cl 19.29.30034** 及其同期 CRT 库，先验证其是否不排序 COMDAT。
 
 ---
 
@@ -139,18 +161,20 @@ link /nologo /DEBUG /INCREMENTAL /MANIFEST:EMBED /subsystem:console ^
 
 判据（`tools/verify_rebuild.py`）：
 
-1. **指令流归一化比对**：capstone 反汇编两侧函数体，把落在镜像内的绝对地址/跳转目标统一归一为 `IMG`，逐指令比较助记符与操作数结构；
+1. **指令流比对（符号化地址）**：capstone 反汇编两侧函数体，以最后一条 `ret` 为边界；
+   镜像内地址先解析为「符号 + 偏移」（锚点：9 个用户函数与 5 个全局变量），解析不到才退回 `IMG`；
+   分支目标与数据引用必须落到同一符号的同一偏移；
 2. **块重排例外**：对标记为 `LAYOUT_ONLY` 的函数（当前仅 `handle_input`），允许前一交付约定的顺序差异——
    比较**去除控制流指令（jmp/jcc）与对齐 nop 后的指令多重集**，相等即判定「仅块重排」；
-3. 期望的指令序列长度一致；
-4. 辅以整节字节比对（`.data` raw 与 `.rsrc` 必须完全相同）、导入集合比对、字面量字节比对。
+3. 指令序列长度（最后一条 `ret` 之前）一致；
+4. 辅以整节字节比对（`.data` raw 与 `.rsrc` 必须完全相同）、Rich header 指纹（cl/link build 与计数）。
 
 | 函数 | 原 VA | 原尺寸 | 指令数 (原/新) | 结论 |
 | --- | --- | --- | --- | --- |
 | `init_level1` | `0x4117F0` | 963 | 219 / 219 | ✅ 完全一致 |
 | `init_level2` | `0x411CD0` | 932 | 217 / 217 | ✅ 完全一致 |
 | `init_level0` | `0x4121B0` | 1205 | 263 / 263 | ✅ 完全一致 |
-| `handle_input` | `0x4127C0` | 446 | 146 / 147 | ⚠️ 仅块排布不同（多 1 条 `jmp`） |
+| `handle_input` | `0x4127C0` | 446 | 146 / 146 | ⚠️ 仅块排布不同（then 块位置） |
 | `move_and_push` | `0x412A30` | 151 | 51 / 51 | ✅ 完全一致 |
 | `move_player` | `0x412AF0` | 179 | 63 / 63 | ✅ 完全一致 |
 | `draw_map` | `0x412BD0` | 111 | 38 / 38 | ✅ 完全一致 |
@@ -161,21 +185,27 @@ link /nologo /DEBUG /INCREMENTAL /MANIFEST:EMBED /subsystem:console ^
 所有用户字面量（含 GBK 中文格式串与 33 条关卡模板串）在原版与重建版中字节一致。
 
 `handle_input` 的唯一差异：`if (space||star)` 的 then 块在原版被放在 else-if 之后（测试指令 `je` 直跳尾部），
-30159 编译器则内联在测试之后，导致多一条 `jmp`（146 → 147 条）。去控制流指令后的指令多重集完全相同，
-语义与指令对应关系一致，属 §5 允许的**块顺序重排**。
+重建编译器（30040/30133/30159 行为一致）则内联在测试之后。按最后一条 `ret` 定界后两侧均为 165 条指令，
+去控制流指令后的多重集完全相同（多 TU 诊断构建亦同），属 §5 允许的**块顺序重排**。
 
 当前验证输出（`python tools/verify_rebuild.py ...`）：
 
 ```
+toolchain fingerprint (Rich header, build x count):
+  original: cl=30034 (30034x13); link=30133 (30133x1)
+  rebuilt : cl=30159 (30034x13, 30159x1); link=30159 (30159x1)
+  newest cl build identical: False; link build identical: False
+
 init_level1   219/219  MATCH
 init_level2   217/217  MATCH
 init_level0   263/263  MATCH
-handle_input  146/147  LAYOUT-ONLY (block reordered)
+handle_input  146/146  LAYOUT-ONLY (block reordered)
 move_and_push  51/51   MATCH
 move_player    63/63   MATCH
 draw_map       38/38   MATCH
 count_remaining_boxes 48/48 MATCH
 main          139/139  MATCH
+symbol-resolved references: 147 branches, 80/81 operands resolved, 278/277 unresolved
 .data raw identical: True
 .rsrc raw identical: True
 RESULT: PASS (layout reordering accepted: handle_input)
@@ -187,10 +217,10 @@ RESULT: PASS (layout reordering accepted: handle_input)
 
 | 差异 | 现象 | 原因 |
 | --- | --- | --- |
-| 函数在 `.text` 中的位置 | 原版按源码序（init1, init2, init0, handle, push, player, draw, count, main）；重建版按符号名排序 | 本机 v142 实际为 **19.29.30159**；/ZI 下 COMDAT 按名字排序。原版为 **30133** |
-| 所有绝对地址 / `rel32` 位移 | `.text` 差 18962 字节、`.rdata` 差 3197 字节 | 由上一行的重排引起（地址漂移），非代码差异 |
+| 函数在 `.text` 中的位置 | 原版按源码序（init1, init2, init0, handle, push, player, draw, count, main）；重建版按符号名排序 | 原版由 **cl 19.29.30034**（VS2019 16.10）编译；cl 30040/30133/30159 都把 COMDAT 按文件名排序 |
+| 所有绝对地址 / `rel32` 位移 | `.text` 差 18962 字节、`.rdata` 差 3192 字节 | 由上一行的重排引起（地址漂移），非代码差异 |
 | 节大小 | `.text` `0x6e2a` vs `0x6dd2`；`.rdata` `+0x100`；`.idata` `+0x13`；`.data` `+0x38`；`.reloc` `+0xF` | 重排 + 地址漂移 + 跳转表/字面量池排布 |
-| Rich header | build 30159 vs 30133 | 工具集补丁版本不同 |
+| Rich header | cl `30034`（原版）vs `30159`（重建）；link `30133` vs `30159` | 本地 VS2019 的 `14.29.30133` 目录实为 30159 二进制；真 30133 行为相同，故非补丁版本所致 |
 | PE 时间戳 / RSDS GUID / age | 每次链接都不同 | 链接期字段 |
 | `.msvcjmc` / `.00cfg` 少量字节 | 共 17 / 2 字节不同 | 内含函数地址（JMC 数据、CFG 表） |
 
@@ -202,20 +232,44 @@ RESULT: PASS (layout reordering accepted: handle_input)
 
 ```bat
 rem 1) 在仓库根目录用 v142 (14.29) 工具集编译
+rem    注意：本机 VC\Tools\MSVC\14.29.30133 内实际是 30159 二进制
 build.bat
 
-rem 2) 归一化指令流比对
+rem 2) 指令流 + 符号化引用 + 工具链指纹
 uv run --with capstone python tools\verify_rebuild.py ^
   --orig ConsoleApplication1.exe ^
   --rebuilt Debug\ConsoleApplication1.exe ^
   --map Debug\ConsoleApplication1.map
+
+rem 3) 可选：一函数一文件诊断构建（复现原版函数顺序）
+python tools\split_multi_tu.py --src ConsoleApplication1.c --out .build\multi
+
+rem 4) 可选：按 build 分组的 Rich header 明细
+python tools\msvc_version.py ConsoleApplication1.exe Debug\ConsoleApplication1.exe
 ```
 
 所需 Python 包：`capstone`。
 
-迁回说明（2026-10-30）：源码与构建入口现已在仓库内。上文 §4 的数字为旧路径产物的历史结果。
-现有验证器把镜像内地址统一为 `IMG`，`LAYOUT_ONLY` 判定会删除跳转并忽略指令顺序，
-因此 `MATCH` / `LAYOUT-ONLY` 不足以证明引用目标正确或控制流等价；此次迁回未改动验证器逻辑。
+验证器不再把镜像内地址一律抹成 `IMG`：可解析的引用必须落到同一符号同一偏移，
+分支目标与数据引用同时受检；未解析的镜像操作数会计数并标为 `IMG`
+（当前实测 147 条分支、两侧 80/81 个操作数被锚定，278/277 个镜像操作数无锚点）。
+
+**获取真 14.29.30133（用于排除补丁版本影响）**：
+- Wayback 快照 `aka.ms/vs/16/release/channel`（2021-09-03）返回
+  `VisualStudio.16.Release.chman`；其中 `Microsoft.VisualStudio.Manifests.VisualStudio`
+  的 payload 即 `VisualStudio.vsman`（约 20 MB）；
+- 按包 ID `Microsoft.VC.14.29.16.11.Tools.HostX86.TargetX86.base` 从 `payloads[].url`
+  直接下载 `payload.vsix`；另需 `...Res.base,language=en-US`（`clui.dll`）、
+  `CRT.Headers.base`、`CRT.x86.Desktop.base`、`CRT.x86.Store.base`（导入库 `msvcrtd.lib` 等）。
+
+实测（2026-10-31）：真 30133 与 30159 的验证结果逐项相同（函数仍按字母序），
+确认工具集补丁版本不是差异来源；原版差异指向 cl 19.29.30034 与 16.10 时代的 CRT 库。
+
+验证器升级（2026-10-31）：地址解析改为符号化 + 分支目标检查，函数边界改为「最后一条 `ret`」，
+并加入 Rich header 指纹输出。旧版把镜像内地址统一为 `IMG` 且按原函数尺寸硬切窗口，
+会把填充区当作代码（多 TU 构建曾因此误报 DIFF）；升级后单文件与一函数一文件构建
+在 `handle_input` 上都稳定判为 `LAYOUT-ONLY`。`LAYOUT_ONLY` 判定本身仍会忽略跳转顺序，
+因此 `MATCH` / `LAYOUT-ONLY` 只说明代码与引用目标对应，不等于整节字节一致。
 
 迁回后实测：源码与外部版本 SHA-256 均为
 `851d6c0a7eb1eaa30f52e7abd269f2848b0d02624659b0149c865b2c9ccf6aa9`。
@@ -231,7 +285,12 @@ uv run --with capstone python tools\verify_rebuild.py ^
 
 ## 7. 下一步
 
-1. 取得 **MSVC 14.29.30133**（VS2019 16.11.0）工具集，消除函数排序、Rich header 与少量代码生成差异；
-2. 目标：`.text` / `.rdata` 全节字节一致；
-3. 回填链接期字段（PE 时间戳、RSDS GUID/age），完成整文件 SHA-256 对齐；
-4. 已完成：重建源码迁回本仓库，替换 DeepSeek 反编译版本，并加入根目录 `build.bat`。
+1. **取得 cl 19.29.30034**（VS2019 16.10.0 初版，2021-05；16.11.2 清单只提供 30040），
+   验证它是否**不排序** COMDAT。若成立，单文件源码即可复现原版函数顺序，再处理 `.rdata`/`.idata`；
+   当前公开渠道（微软 CDN 旧清单、archive.org ISO）未找到 30034 payload。
+2. 若 30034 仍排序，则原工程是一函数一文件：用 `tools/split_multi_tu.py` 搜索文件划分，
+   以 `.rdata` / `.msvcjmc` 大小收敛为准。
+3. `handle_input` 的块排布：在全函数 165 条指令范围内尝试不同条件写法（合并条件、调整 `else if`），
+   复现原版 then 块后置布局。
+4. 回填 PE 时间戳与 RSDS GUID/age，核对整文件 SHA-256。
+5. 已完成：源码迁回仓库、`build.bat`、符号化验证器、一函数一文件诊断工具。

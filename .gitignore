@@ -61,3 +61,6 @@ dkms.conf
 
 # Python
 __pycache__/
+
+# Local build/experiment outputs
+.build/

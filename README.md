@@ -36,3 +36,11 @@ uv run --with capstone python tools\verify_rebuild.py --orig ConsoleApplication1
 
 构建产物位于 `Debug/`，不会覆盖根目录的原始 `ConsoleApplication1.exe`。
 还原进度及验证边界见 [Reverse.md](Reverse.md)；验证器的 `PASS` 不代表控制流或整文件字节完全一致。
+
+验证器现在会同时输出 Rich header 工具链指纹（cl/link build 与 obj 计数），
+并把镜像内地址解析为「符号 + 偏移」后比较分支目标与数据引用。
+
+已知事实：原版用户代码由 cl `19.29.30034`（VS2019 16.10 时代）编译、链接器为 `14.29.30133`；
+本机 `VC\Tools\MSVC\14.29.30133` 目录内实际是 30159 二进制。cl 30040/30133/30159
+都会把每个函数写成按名排序的 COMDAT，因此单文件构建的函数顺序与原版不同；
+`tools/split_multi_tu.py` 可生成一函数一文件构建用于诊断该差异（详见 Reverse.md §3.5、§7）。
