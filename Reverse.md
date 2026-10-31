@@ -43,7 +43,7 @@
 
 - 仅一项：`RT_MANIFEST`，ID 1，语言 `0x409`，381 字节。
 - 内容为链接器默认 manifest（`asInvoker`，379 字节 XML），无图标、无版本信息。
-- 重建产物的 `.rsrc` **整节 512 字节逐字节相同**。
+- 重建产物的 `.rsrc` **整节 1536 字节（`0x600`）逐字节相同**。
 
 ### 1.3 导入（Debug 动态 CRT）
 
@@ -181,7 +181,7 @@ link /nologo /DEBUG /INCREMENTAL /MANIFEST:EMBED /subsystem:console ^
 | `count_remaining_boxes` | `0x412C60` | 147 | 48 / 48 | ✅ 完全一致 |
 | `main` | `0x412E00` | 534 | 139 / 139 | ✅ 完全一致 |
 
-另：`.data` raw（512 字节）、`.rsrc`（512 字节）逐字节相同；三个 DLL 的导入函数集合完全相同；
+另：`.data` raw（512 字节）、`.rsrc` raw（1536 字节）逐字节相同；三个 DLL 的导入函数集合完全相同；
 所有用户字面量（含 GBK 中文格式串与 33 条关卡模板串）在原版与重建版中字节一致。
 
 `handle_input` 的唯一差异：`if (space||star)` 的 then 块在原版被放在 else-if 之后（测试指令 `je` 直跳尾部），
@@ -287,7 +287,8 @@ python tools\msvc_version.py ConsoleApplication1.exe Debug\ConsoleApplication1.e
 
 1. **取得 cl 19.29.30034**（VS2019 16.10.0 初版，2021-05；16.11.2 清单只提供 30040），
    验证它是否**不排序** COMDAT。若成立，单文件源码即可复现原版函数顺序，再处理 `.rdata`/`.idata`；
-   当前公开渠道（微软 CDN 旧清单、archive.org ISO）未找到 30034 payload。
+   当前公开渠道（微软 CDN 旧清单、archive.org ISO）未找到 30034 payload；
+   MSDN 的 VS2019 下载只提供 16.0 / 16.4 / 16.7 / 16.9 / 16.11，没有 16.10（30034 所在版本）。
 2. 若 30034 仍排序，则原工程是一函数一文件：用 `tools/split_multi_tu.py` 搜索文件划分，
    以 `.rdata` / `.msvcjmc` 大小收敛为准。
 3. `handle_input` 的块排布：在全函数 165 条指令范围内尝试不同条件写法（合并条件、调整 `else if`），
